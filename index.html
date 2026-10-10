@@ -60,6 +60,10 @@ select.field{appearance:none;background-image:linear-gradient(45deg,transparent 
 .qs button small{display:block;font-family:var(--body);font-weight:500;font-size:12px;color:var(--muted)}
 .qs button[aria-pressed="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 .qs button[aria-pressed="true"] small{color:inherit;opacity:.75}
+.split{display:flex;align-items:center;gap:8px;margin:-2px 0 10px;flex-wrap:wrap}
+.split .lab{font-family:var(--cond);font-weight:600;font-size:17px}
+.split .tg{min-width:52px;font-size:16px}
+.split .hint{margin:0;flex-basis:100%}
 .qs button .dot{position:absolute;top:6px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
 
 /* pitch */
@@ -195,15 +199,21 @@ const FORMS={
  '2-3-2-1':[['GK',50,89],['LCB',32,72],['RCB',68,72],['LM',17,52],['CM',50,54],['RM',83,52],['LAM',32,32],['RAM',68,32],['ST',50,14]],
  '3-1-3-1':[['GK',50,89],['LB',20,72],['CB',50,74],['RB',80,72],['DM',50,58],['LM',17,40],['AM',50,38],['RM',83,40],['ST',50,15]]
 };
-const BL=[[0,15],[15,30],[30,45],[45,60]];
+let BL=[];
+const GAME=60;
+function syncBL(){const s=(S&&S.match&&S.match.split)||15,n=Math.round(GAME/s);BL=Array.from({length:n},(_,i)=>[i*s,(i+1)*s]);
+  const m=S&&S.match;if(m){while(m.blocks.length<n)m.blocks.push(Array(9).fill(null));if(m.blocks.length>n)m.blocks.length=n}}
+const blen=()=>BL[0]?BL[0][1]:15;
+const is15=()=>(S.match.split||15)===15;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid=()=>Math.random().toString(36).slice(2,9);
 const today=()=>new Date().toISOString().slice(0,10);
-function blankMatch(f){return{opp:'',date:today(),formation:f||'3-3-2',avail:{},thirty:null,blocks:[0,1,2,3].map(()=>Array(9).fill(null)),timer:{start:null,acc:0},alerted:[]}}
+function blankMatch(f,split){const sp=split||15;return{opp:'',date:today(),formation:f||'3-3-2',split:sp,avail:{},thirty:null,blocks:Array.from({length:Math.round(60/sp)},()=>Array(9).fill(null)),timer:{start:null,acc:0},alerted:[]}}
 function load(){try{const r=localStorage.getItem(KEY);if(r){const s=JSON.parse(r);if(s&&Array.isArray(s.players)&&s.match)return s}}catch(e){}return{players:[],match:blankMatch(),history:[]}}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 let S=load(),view='plan',cur=0,benchSel=null,flash=null,audio=null,wake=null;
+syncBL();
 
 const P=id=>S.players.find(p=>p.id===id);
 const isAvail=id=>S.match.avail[id]!==false;
@@ -211,7 +221,7 @@ const byNum=l=>l.slice().sort((a,b)=>((a.num||999)-(b.num||999))||a.name.localeC
 const avail=()=>byNum(S.players.filter(p=>isAvail(p.id)));
 const pos=i=>FORMS[S.match.formation][i][0];
 const nm=id=>{const p=P(id);return p?p.name:'?'};
-const mins=id=>S.match.blocks.reduce((t,b)=>t+(b.includes(id)?15:0),0);
+const mins=id=>S.match.blocks.reduce((t,b,i)=>t+(b.includes(id)&&BL[i]?BL[i][1]-BL[i][0]:0),0);
 const fmt=ms=>{const s=Math.max(0,Math.floor(ms/1000));return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')};
 
 function changes(b){
@@ -234,10 +244,36 @@ function thirtySuggest(){
 function warnings(){
   const w=[],m=S.match;
   m.blocks.forEach((b,i)=>{const e=b.filter(x=>!x).length;if(e)w.push(`${BL[i][0]}–${BL[i][1]}' has ${e} empty position${e>1?'s':''}`)});
-  if(m.thirty&&isAvail(m.thirty)){const t=mins(m.thirty);if(t!==30)w.push(`${esc(nm(m.thirty))} is this week's 30-minute player but is down for ${t}'`)}
+  if(is15()&&m.thirty&&isAvail(m.thirty)){const t=mins(m.thirty);if(t!==30)w.push(`${esc(nm(m.thirty))} is this week's 30-minute player but is down for ${t}'`)}
   const filled=m.blocks.some(b=>b.some(Boolean));
   if(filled)avail().forEach(p=>{if(!mins(p.id))w.push(`${esc(p.name)} isn't down to play at all`)});
   return w;
+}
+
+/* ---------- auto rotation ---------- */
+// From the kick-off lineup: each change, the players who've sat out least come off
+// (never the keeper) and the current bench goes on in their positions.
+function autoPlan(){
+  const m=S.match,b0=m.blocks[0];
+  if(b0.some(x=>!x)){toast('Fill the kick-off lineup first');return}
+  const sat={};let bench=avail().map(p=>p.id).filter(id=>!b0.includes(id));
+  if(!bench.length){toast('Nobody on the bench to rotate');return}
+  bench.forEach(id=>sat[id]=(sat[id]||0)+1);
+  for(let k=1;k<BL.length;k++){
+    const prev=m.blocks[k-1],next=prev.slice();
+    const cands=prev.map((id,i)=>({id,i})).filter(o=>o.i>0&&o.id);
+    cands.sort((a,b)=>((sat[a.id]||0)-(sat[b.id]||0))||(a.i-b.i));
+    const offs=cands.slice(0,bench.length);
+    offs.forEach((o,j)=>{next[o.i]=bench[j]});
+    bench=offs.map(o=>o.id);bench.forEach(id=>sat[id]=(sat[id]||0)+1);
+    m.blocks[k]=next;
+  }
+  save();render();
+}
+function splitHint(){
+  const out=avail().length-1;if(out<9)return '';
+  const fair=Math.round(8*GAME/out*10)/10,bench=out-8;
+  return `${avail().length} available: ${bench} on the bench each period, ${fair}' each for outfield players if it's shared evenly.`;
 }
 
 /* ---------- views ---------- */
@@ -252,7 +288,7 @@ function renderTabs(){
   $('#tabs').innerHTML=[['plan','Plan'],['match','Match'],['squad','Squad'],['season','Season']].map(([k,l])=>
     `<button data-tab="${k}" ${view===k?'aria-current="page"':''}>${ICONS[k]}${l}${k==='match'&&running?'<span class="live"></span>':''}</button>`).join('');
 }
-function render(){renderTabs();({plan:renderPlan,match:renderMatch,squad:renderSquad,season:renderSeason})[view]();}
+function render(){syncBL();renderTabs();({plan:renderPlan,match:renderMatch,squad:renderSquad,season:renderSeason})[view]();}
 
 function renderPlan(){
   const m=S.match;
@@ -271,7 +307,8 @@ function renderPlan(){
   <div class="row"><h1 class="grow">Sunday Subs</h1><button class="btn small" data-act="newmatch">New match</button></div>
   <div class="matchbar"><label class="opp"><span>v</span><input id="opp" placeholder="Opponent" value="${esc(m.opp)}"></label>
     <select class="field" id="form" aria-label="Formation">${Object.keys(FORMS).map(f=>`<option ${f===m.formation?'selected':''}>${f}</option>`).join('')}</select></div>
-  <div class="qs" role="group" aria-label="Game period">${BL.map((b,i)=>`<button data-q="${i}" aria-pressed="${i===cur}">${b[0]}–${b[1]}'<small>${i===0?'Kick-off':changes(i).count+' change'+(changes(i).count===1?'':'s')}</small>${m.blocks[i].some(x=>!x)?'<span class="dot"></span>':''}</button>`).join('')}</div>
+  <div class="split" role="group" aria-label="Sub timing"><span class="lab">Subs every</span>${[15,12].map(v=>`<button class="tg" data-split="${v}" aria-pressed="${(m.split||15)===v}">${v}'</button>`).join('')}<button class="btn small" data-act="autoplan" style="margin-left:auto">Auto-plan subs</button><div class="hint">${splitHint()}</div></div>
+  <div class="qs" role="group" aria-label="Game period" style="grid-template-columns:repeat(${BL.length},1fr)">${BL.map((b,i)=>`<button data-q="${i}" aria-pressed="${i===cur}">${b[0]}–${b[1]}'<small>${i===0?'Kick-off':changes(i).count+' change'+(changes(i).count===1?'':'s')}</small>${m.blocks[i].some(x=>!x)?'<span class="dot"></span>':''}</button>`).join('')}</div>
   <div class="pitch ${benchSel?'placing':''}">
     <svg viewBox="0 0 300 400" preserveAspectRatio="none" aria-hidden="true" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="2">
       <rect x="10" y="10" width="280" height="380"/><line x1="10" y1="200" x2="290" y2="200"/><circle cx="150" cy="200" r="36"/>
@@ -285,12 +322,12 @@ function renderPlan(){
     <div class="hint">${benchSel?`Now tap a position to bring ${esc(nm(benchSel))} on.`:'Tap a bench player then a position to sub them on, or tap any position to pick.'}</div></div>
   ${ch?boardHTML(cur,ch):''}
   ${w.length?`<div class="warns">${w.map(x=>`<div>${x}</div>`).join('')}</div>`:''}
-  <h2>30-minute player this week</h2>
+  ${is15()?`<h2>30-minute player this week</h2>
   <div class="thirty"><select class="field" id="thirty"><option value="">Not set</option>${avail().map(p=>`<option value="${p.id}" ${m.thirty===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select>
-    ${tsug?`<p>Next in the rotation: <strong>${esc(tsug.name)}</strong> (${thirtyCounts()[tsug.id]||0} so far this season)${m.thirty!==tsug.id?` <button class="btn small" data-act="usesug" style="margin-left:6px">Use</button>`:''}</p>`:''}</div>
+    ${tsug?`<p>Next in the rotation: <strong>${esc(tsug.name)}</strong> (${thirtyCounts()[tsug.id]||0} so far this season)${m.thirty!==tsug.id?` <button class="btn small" data-act="usesug" style="margin-left:6px">Use</button>`:''}</p>`:''}</div>`:''}
   <h2>Minutes</h2>
-  <div class="mins">${avail().map(p=>`<div class="mrow"><div class="n">${esc(p.name)}${m.thirty===p.id?'<small>30\' this week</small>':''}</div>
-    <div class="segs">${m.blocks.map(b=>`<i class="${b.includes(p.id)?'f':''}"></i>`).join('')}</div><div class="m">${mins(p.id)}'</div></div>`).join('')}</div>
+  <div class="mins">${avail().map(p=>`<div class="mrow"><div class="n">${esc(p.name)}${is15()&&m.thirty===p.id?'<small>30\' this week</small>':''}</div>
+    <div class="segs" style="grid-template-columns:repeat(${BL.length},1fr)">${m.blocks.map(b=>`<i class="${b.includes(p.id)?'f':''}"></i>`).join('')}</div><div class="m">${mins(p.id)}'</div></div>`).join('')}</div>
   <div class="actions"><button class="btn" data-act="share">Share sub sheet</button></div>`;
 }
 function boardHTML(b,ch){
@@ -304,16 +341,16 @@ function boardHTML(b,ch){
 
 function elapsed(){const t=S.match.timer;return t.acc+(t.start?Date.now()-t.start:0)}
 function renderMatch(){
-  const m=S.match,e=elapsed(),min=e/60000,b=Math.min(3,Math.floor(min/15)),ft=min>=60;
-  const next=b+1<=3&&!ft?b+1:null,ch=next?changes(next):null;
-  const blk=m.blocks[ft?3:b];
+  const m=S.match,e=elapsed(),min=e/60000,last=BL.length-1,b=Math.min(last,Math.floor(min/blen())),ft=min>=GAME;
+  const next=b+1<=last&&!ft?b+1:null,ch=next?changes(next):null;
+  const blk=m.blocks[ft?last:b];
   $('#app').innerHTML=`
   <div class="row"><h1 class="grow">${m.opp?'v '+esc(m.opp):'Match'}</h1><span class="muted">${esc(m.formation)}</span></div>
   <div class="clock"><div class="t" id="clk">${fmt(e)}</div><div class="q" id="qlbl">${ft?'Full time':`Playing ${BL[b][0]}–${BL[b][1]}'`}</div></div>
-  <div class="prog"><span id="bar" style="width:${Math.min(100,min/60*100)}%"></span><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div>
+  <div class="prog"><span id="bar" style="width:${Math.min(100,min/60*100)}%"></span>${BL.slice(1).map(x=>`<i style="left:${x[0]/GAME*100}%"></i>`).join('')}</div>
   <div class="ctrls"><button class="btn primary" data-act="startstop">${m.timer.start?'Pause':(e>0?'Resume':'Kick off')}</button><button class="btn" data-act="reset">Reset</button></div>
-  ${flash!==null?`<div class="alert" role="alert"><span>${flash===4?'Full time':`Subs now, ${BL[flash][0]}'`}</span><button class="btn small" data-act="dismiss">Done</button></div>`:''}
-  ${flash!==null&&flash<4?boardHTML(flash,changes(flash)):''}
+  ${flash!==null?`<div class="alert" role="alert"><span>${flash===BL.length?'Full time':`Subs now, ${BL[flash][0]}'`}</span><button class="btn small" data-act="dismiss">Done</button></div>`:''}
+  ${flash!==null&&flash<BL.length?boardHTML(flash,changes(flash)):''}
   ${next&&flash!==next?`<div class="board"><h3><span>Next changes at ${BL[next][0]}:00</span><span id="cd">in ${fmt(BL[next][0]*60000-e)}</span></h3>${ch.count?boardInner(ch):'<div class="none">No changes planned.</div>'}</div>`:''}
   <h2>On the pitch</h2>
   <div class="lineup">${blk.map((id,i)=>`<div><small>${pos(i)}</small>${id?esc(nm(id)):'—'}</div>`).join('')}</div>
@@ -381,7 +418,8 @@ function sheetText(){
   const m=S.match,L=[];
   L.push(`${m.opp?'v '+m.opp:'Sunday match'} (${m.formation})`);
   L.push(`Kick-off: `+m.blocks[0].map((id,i)=>`${pos(i)} ${id?nm(id):'-'}`).join(', '));
-  for(let b=1;b<4;b++){const c=changes(b),parts=[];
+  L.push(`Subs every ${blen()}'`);
+  for(let b=1;b<BL.length;b++){const c=changes(b),parts=[];
     c.on.forEach(o=>parts.push(`${nm(o.id)} on${o.for?' for '+nm(o.for):''} at ${pos(o.i)}`));
     c.loneOff.forEach(id=>parts.push(`${nm(id)} off`));
     c.moved.forEach(o=>parts.push(`${nm(o.id)} ${pos(o.from)} to ${pos(o.to)}`));
@@ -402,15 +440,15 @@ function beep(){try{if(!audio)return;[0,0.35].forEach(d=>{const o=audio.createOs
 async function keepAwake(on){try{if(on&&'wakeLock' in navigator&&!wake){wake=await navigator.wakeLock.request('screen');wake.addEventListener('release',()=>wake=null)}else if(!on&&wake){await wake.release();wake=null}}catch(e){}}
 function tick(){
   const m=S.match;if(!m.timer.start)return;
-  const min=elapsed()/60000;
-  for(const b of [1,2,3,4]){const at=b===4?60:BL[b][0];
+  syncBL();const min=elapsed()/60000,n=BL.length;
+  for(let b=1;b<=n;b++){const at=b===n?GAME:BL[b][0];
     if(min>=at&&!m.alerted.includes(b)){m.alerted.push(b);flash=b;save();
-      if(b===4){m.timer.acc=elapsed();m.timer.start=null;keepAwake(false)}
+      if(b===n){m.timer.acc=elapsed();m.timer.start=null;keepAwake(false)}
       try{navigator.vibrate&&navigator.vibrate([400,150,400,150,400])}catch(e){}beep();
       if(view!=='match')view='match';render();return}}
   if(view==='match'){const e=elapsed(),c=$('#clk'),bar=$('#bar'),cd=$('#cd');
     if(c)c.textContent=fmt(e);if(bar)bar.style.width=Math.min(100,e/3600000*100)+'%';
-    const nb=Math.floor(e/900000)+1;if(cd&&nb<=3)cd.textContent='in '+fmt(nb*900000-e);}
+    const L=blen()*60000,nb=Math.floor(e/L)+1;if(cd&&nb<=BL.length-1)cd.textContent='in '+fmt(nb*L-e);}
 }
 setInterval(tick,500);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&S.match.timer.start){keepAwake(true);tick()}});
@@ -426,6 +464,10 @@ document.addEventListener('click',async ev=>{
   if(d.bench){benchSel=benchSel===d.bench?null:d.bench;render();return}
   if(d.slot!==undefined){const i=+d.slot;if(benchSel){place(i,benchSel);benchSel=null;render()}else pickFor(i);return}
   if(d.pick!==undefined){place(+d.i,d.pick||null);closeSheet();render();return}
+  if(d.split){const sp=+d.split,m=S.match;if(sp===(m.split||15))return;
+    if(m.timer.start||m.timer.acc){toast('Reset the clock on the Match tab before changing sub timing');return}
+    const go=()=>{const k0=m.blocks[0];m.split=sp;m.blocks=[k0];syncBL();if(sp!==15)m.thirty=null;cur=0;benchSel=null;save();render()};
+    if(m.blocks.slice(1).some(b=>b.some(Boolean)))ask('Change sub timing?','Your kick-off lineup stays. The later periods are cleared so you can re-plan them, and Auto-plan subs does that in one tap.','Change timing',go);else go();return}
   if(d.gk){const p=P(d.gk);p.gk=!p.gk;save();render();return}
   if(d.avail){const id=d.avail;const now=!isAvail(id);S.match.avail[id]=now;
     if(!now){S.match.blocks.forEach(b=>b.forEach((x,i)=>{if(x===id)b[i]=null}));if(S.match.thirty===id)S.match.thirty=null}
@@ -438,6 +480,7 @@ document.addEventListener('click',async ev=>{
   if(a==='confirm-ok'){const f=pending;pending=null;closeSheet();f&&f();return}
   if(a==='add'){const n=$('#newname').value.trim();if(!n)return;S.players.push({id:uid(),name:n,num:$('#newnum').value.trim(),gk:false});save();render();$('#newname').focus()}
   if(a==='bulk'){$('#bulk').value.split('\n').map(s=>s.trim()).filter(Boolean).forEach(line=>{const mm=line.match(/^(\d+)[\s.)-]+(.+)$/);S.players.push({id:uid(),name:mm?mm[2].trim():line,num:mm?mm[1]:'',gk:false})});save();render()}
+  if(a==='autoplan'){if(S.match.blocks.slice(1).some(b=>b.some(Boolean)))ask('Auto-plan the subs?','This replaces every period after kick-off. Your kick-off lineup stays as it is.','Auto-plan',autoPlan);else autoPlan()}
   if(a==='copyprev'){S.match.blocks[cur]=S.match.blocks[cur-1].slice();save();render()}
   if(a==='usesug'){const s=thirtySuggest();if(s){S.match.thirty=s.id;save();render()}}
   if(a==='share')share();
@@ -445,7 +488,7 @@ document.addEventListener('click',async ev=>{
   if(a==='import')$('#importFile').click();
   if(a==='newmatch')openSheet(`<h2 style="margin:0 0 6px">Start a new match?</h2><p class="muted" style="margin:0 0 12px">Your squad and season stay. Save this match to the season first if you haven't.</p>
     <div class="actions"><button class="btn primary" data-act="new-keep">Keep this lineup as a starting point</button><button class="btn" data-act="new-clear">Start from a blank pitch</button><button class="btn" data-close="1">Cancel</button></div>`);
-  if(a==='new-keep'||a==='new-clear'){const old=S.match,n=blankMatch(old.formation);if(a==='new-keep')n.blocks=old.blocks.map(b=>b.slice());n.avail=old.avail;S.match=n;flash=null;cur=0;keepAwake(false);save();closeSheet();render()}
+  if(a==='new-keep'||a==='new-clear'){const old=S.match,n=blankMatch(old.formation,old.split);if(a==='new-keep')n.blocks=old.blocks.map(b=>b.slice());n.avail=old.avail;S.match=n;flash=null;cur=0;keepAwake(false);save();closeSheet();render()}
   if(a==='startstop'){const tm=S.match.timer;
     if(!audio){try{audio=new (window.AudioContext||window.webkitAudioContext)()}catch(e){}}
     if(tm.start){tm.acc+=Date.now()-tm.start;tm.start=null;keepAwake(false)}else{if(elapsed()>=3600000)return;tm.start=Date.now();keepAwake(true)}
@@ -455,7 +498,7 @@ document.addEventListener('click',async ev=>{
   if(a==='finish'){const m=S.match;if(!m.blocks.some(b=>b.some(Boolean))){toast('Plan a lineup first');return}
     ask('Save this match to the season?','Adds everyone\'s minutes and this week\'s 30-minute player to the season totals.','Save match',()=>{
     const mm={};avail().forEach(p=>mm[p.id]=mins(p.id));
-    S.history.push({id:uid(),date:m.date,opp:m.opp,mins:mm,thirty:m.thirty});
+    S.history.push({id:uid(),date:m.date,opp:m.opp,mins:mm,thirty:is15()?m.thirty:null});
     m.timer={start:null,acc:0};m.alerted=[];flash=null;keepAwake(false);save();view='season';render()})}
 });
 document.addEventListener('change',ev=>{
@@ -487,7 +530,7 @@ $('#importFile').addEventListener('change',async ev=>{
   const when=data.exported?new Date(data.exported).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'an unknown date';
   ask('Restore this backup?',`From ${esc(when)}: ${st.players.length} players and ${st.history.length} saved matches. This replaces everything on this phone.`,'Restore backup',()=>{
     st.match.timer=st.match.timer||{start:null,acc:0};st.match.alerted=st.match.alerted||[];st.match.avail=st.match.avail||{};
-    S=st;cur=0;benchSel=null;flash=null;save();view=S.players.length>=9?'plan':'squad';render();toast('Backup restored')},true);
+    S=st;cur=0;benchSel=null;flash=null;syncBL();save();view=S.players.length>=9?'plan':'squad';render();toast('Backup restored')},true);
 });
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 checkPersist();
